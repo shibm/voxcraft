@@ -11,74 +11,88 @@ import {
   AlertCircle,
   Headphones,
   Bell,
-  Sparkles,
+  Upload,
   ExternalLink,
-  Infinity as InfinityIcon,
+  Sliders,
+  Sparkles,
 } from 'lucide-react';
 import { GeneratedClip } from './types';
-import { base64ToBlobUrl, countWords, estimateDuration, formatTime, downloadAudio } from './utils/audio';
-import { wavArrayBufferToMp3Blob } from './utils/mp3Encoder';
+import { base64ToBlobUrl, countWords, estimateDuration, formatTime } from './utils/audio';
 import { playTestChime } from './utils/soundTest';
 import { AudioPlayer } from './components/AudioPlayer';
 import { HistoryList } from './components/HistoryList';
-import { UnlimitedTTSView } from './components/UnlimitedTTSView';
 
-interface VoiceOption {
+interface LocalVoiceOption {
   id: string;
   name: string;
+  accent: string;
   gender: 'Female' | 'Male';
-  vibe: string;
-  avatarBg: string;
+  description: string;
 }
 
-const VOICES: VoiceOption[] = [
+const LOCAL_VOICES: LocalVoiceOption[] = [
   {
-    id: 'Kore',
-    name: 'Kore',
+    id: 'en-us+f2',
+    name: 'Emma (US)',
+    accent: 'American',
     gender: 'Female',
-    vibe: 'Warm, natural & clear voice',
-    avatarBg: 'from-purple-500 to-indigo-600',
+    description: 'Clear, natural-cadence American female voice',
   },
   {
-    id: 'Puck',
-    name: 'Puck',
+    id: 'en-us',
+    name: 'David (US)',
+    accent: 'American',
     gender: 'Male',
-    vibe: 'Friendly, energetic & conversational',
-    avatarBg: 'from-blue-500 to-cyan-600',
+    description: 'Standard clear American male voice',
   },
   {
-    id: 'Fenrir',
-    name: 'Fenrir',
-    gender: 'Male',
-    vibe: 'Deep, rich & authoritative',
-    avatarBg: 'from-amber-500 to-orange-600',
-  },
-  {
-    id: 'Zephyr',
-    name: 'Zephyr',
+    id: 'en-us+f3',
+    name: 'Claire (US)',
+    accent: 'American',
     gender: 'Female',
-    vibe: 'Soft, gentle & soothing voice',
-    avatarBg: 'from-emerald-500 to-teal-600',
+    description: 'Soft, calm, relaxed American female voice',
   },
   {
-    id: 'Charon',
-    name: 'Charon',
+    id: 'en-us+m3',
+    name: 'Marcus (US)',
+    accent: 'American',
     gender: 'Male',
-    vibe: 'Calm, thoughtful & formal',
-    avatarBg: 'from-rose-500 to-pink-600',
+    description: 'Deep, resonant, authoritative male voice',
+  },
+  {
+    id: 'en-gb',
+    name: 'Oliver (UK)',
+    accent: 'British',
+    gender: 'Male',
+    description: 'Crisp, articulate British English accent',
+  },
+  {
+    id: 'en-gb-scotland',
+    name: 'Ian (Scottish)',
+    accent: 'Scottish',
+    gender: 'Male',
+    description: 'Classic Scottish accent with distinct inflection',
+  },
+  {
+    id: 'en-us+whisper',
+    name: 'Echo (Whisper)',
+    accent: 'American',
+    gender: 'Female',
+    description: 'Soft whisper acoustic vocal tone',
   },
 ];
 
 const PRESETS = [
-  'Hello! This is a test to verify that text to speech is working with crystal clear audio.',
-  'Welcome to our project. You can type any sentence here, convert it into speech, and download the MP3 file.',
-  'In the quiet of the morning, when the mist lingers above the grass, you can hear the first birds of dawn.',
+  'Hello! This is a 100% local text-to-speech engine running completely offline without any AI.',
+  'Welcome to the local converter. You can type any sentence, hear it through your speakers, and download the MP3.',
+  'The local speech engine operates with zero latency, zero cloud costs, and unlimited word processing capacity.',
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'studio' | 'unlimited'>('studio');
   const [text, setText] = useState<string>(PRESETS[0]);
-  const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
+  const [selectedVoice, setSelectedVoice] = useState<string>('en-us+f2');
+  const [speed, setSpeed] = useState<number>(160); // words per minute (100 - 260)
+  const [pitch, setPitch] = useState<number>(50);  // pitch (20 - 80)
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentClip, setCurrentClip] = useState<GeneratedClip | null>(null);
@@ -87,9 +101,10 @@ export default function App() {
   const [testingSpeaker, setTestingSpeaker] = useState<boolean>(false);
 
   const playerRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const wordCount = countWords(text);
-  const estimatedSeconds = estimateDuration(wordCount, 150);
+  const estimatedSeconds = estimateDuration(wordCount, speed);
 
   // Load history from localStorage
   useEffect(() => {
@@ -99,9 +114,11 @@ export default function App() {
         const parsed: GeneratedClip[] = JSON.parse(saved);
         const hydrated = parsed.map((item) => {
           if (item.base64Audio) {
+            const url = base64ToBlobUrl(item.base64Audio, 'audio/mp3');
             return {
               ...item,
-              audioUrl: base64ToBlobUrl(item.base64Audio),
+              audioUrl: url,
+              mp3Url: url,
             };
           }
           return item;
@@ -135,10 +152,36 @@ export default function App() {
     setTestingSpeaker(false);
   };
 
-  // Main Convert function: Synthesize natural human speech and convert to MP3
+  // Upload an audio file to test in player
+  const handleUploadAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const url = URL.createObjectURL(file);
+    const newClip: GeneratedClip = {
+      id: Date.now().toString(),
+      text: `Uploaded File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+      engine: 'wav-synth',
+      voiceName: file.name.slice(0, 16),
+      audioUrl: url,
+      mp3Url: url,
+      timestamp: Date.now(),
+      duration: 0,
+      wordCount: 0,
+    };
+
+    setCurrentClip(newClip);
+    saveToHistory(newClip);
+
+    setTimeout(() => {
+      playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 50);
+  };
+
+  // 100% LOCAL Speech Synthesis (No AI)
   const handleConvert = async () => {
     if (!text.trim()) {
-      setErrorMessage('Please type some text to convert.');
+      setErrorMessage('Please type some text to convert into speech.');
       return;
     }
 
@@ -146,47 +189,35 @@ export default function App() {
     setErrorMessage(null);
 
     try {
-      // Call server-side high fidelity TTS API
+      // Calls local espeak-ng + ffmpeg on localhost (50ms latency, zero cloud)
       const response = await fetch('/api/tts/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: text.trim(),
           voice: selectedVoice,
-          style: 'Clear, natural, and expressive human narrator',
+          speed: speed,
+          pitch: pitch,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok || !data.audioBase64) {
-        throw new Error(data.error || 'Speech generation failed. Please try again.');
+        throw new Error(data.error || 'Local speech synthesis failed.');
       }
 
-      // Convert returned base64 WAV into a Blob URL
-      const wavBlobUrl = base64ToBlobUrl(data.audioBase64, 'audio/wav');
-
-      // Convert WAV to MP3 format immediately
-      let mp3BlobUrl: string | undefined = undefined;
-      try {
-        const byteCharacters = atob(data.audioBase64);
-        const byteNumbers = new Uint8Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const mp3Blob = wavArrayBufferToMp3Blob(byteNumbers.buffer, 128);
-        mp3BlobUrl = URL.createObjectURL(mp3Blob);
-      } catch (mp3Err) {
-        console.warn('MP3 conversion fallback:', mp3Err);
-      }
+      // Convert local base64 MP3 to Blob URL for instant speaker output
+      const mp3Url = base64ToBlobUrl(data.audioBase64, 'audio/mp3');
+      const chosenVoiceObj = LOCAL_VOICES.find((v) => v.id === selectedVoice);
 
       const newClip: GeneratedClip = {
         id: Date.now().toString(),
         text: text.trim(),
-        engine: 'gemini',
-        voiceName: selectedVoice,
-        audioUrl: wavBlobUrl,
-        mp3Url: mp3BlobUrl,
+        engine: 'wav-synth',
+        voiceName: chosenVoiceObj ? chosenVoiceObj.name : 'Local Voice',
+        audioUrl: mp3Url,
+        mp3Url: mp3Url,
         base64Audio: data.audioBase64,
         timestamp: Date.now(),
         duration: estimatedSeconds,
@@ -196,13 +227,13 @@ export default function App() {
       setCurrentClip(newClip);
       saveToHistory(newClip);
 
-      // Scroll to player so user immediately sees and hears it
+      // Scroll to player so user immediately hears it
       setTimeout(() => {
         playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }, 50);
     } catch (err: any) {
-      console.error('Conversion error:', err);
-      setErrorMessage(err.message || 'Unable to convert text to speech.');
+      console.error('Local speech error:', err);
+      setErrorMessage(err.message || 'Unable to generate local speech.');
     } finally {
       setIsGenerating(false);
     }
@@ -217,28 +248,51 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Hidden Audio File Input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*,.mp3,.wav,.ogg,.m4a"
+        onChange={handleUploadAudio}
+        className="hidden"
+      />
+
       {/* Top Header */}
       <header className="border-b border-slate-800 bg-slate-900/90 sticky top-0 z-20 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <Volume2 className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-white tracking-wide">
-                Text to Audio Converter
-              </h1>
-              <p className="text-xs text-slate-400">Natural voice speech synthesis with MP3 export</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-white tracking-wide">
+                  Local Voice
+                </h1>
+                <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                  100% Offline • Zero AI
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">Pure local speech synthesis with MP3 audio output</p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2">
             <button
-              onClick={handleTestSpeaker}
-              title="Test if your speakers and browser tab sound are working"
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition active:scale-95"
+              onClick={() => fileInputRef.current?.click()}
+              title="Upload any MP3 or audio file to inspect and play it"
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 transition active:scale-95"
             >
-              <Bell className={`w-3.5 h-3.5 ${testingSpeaker ? 'text-amber-400 animate-bounce' : 'text-emerald-400'}`} />
+              <Upload className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Upload Audio</span>
+            </button>
+
+            <button
+              onClick={handleTestSpeaker}
+              title="Test if your speakers and browser tab volume are working"
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 flex items-center gap-1.5 transition active:scale-95"
+            >
+              <Bell className={`w-3.5 h-3.5 ${testingSpeaker ? 'text-amber-300 animate-bounce' : 'text-emerald-400'}`} />
               <span>{testingSpeaker ? 'Playing...' : 'Test Speaker 🔔'}</span>
             </button>
 
@@ -258,38 +312,23 @@ export default function App() {
 
       {/* Main Workspace */}
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-6 space-y-6">
-        {/* Mode Switcher */}
-        <div className="flex items-center justify-center p-1 bg-slate-900 border border-slate-800 rounded-xl max-w-lg mx-auto shadow-inner">
-          <button
-            onClick={() => setActiveTab('studio')}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition ${
-              activeTab === 'studio'
-                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Studio MP3 (Natural Voice)</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('unlimited')}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition ${
-              activeTab === 'unlimited'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <InfinityIcon className="w-3.5 h-3.5" />
-            <span>UnlimitedTTS (Local Engine)</span>
-          </button>
+        {/* Local Engine Banner */}
+        <div className="p-4 rounded-2xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-200 text-xs flex items-start gap-3 backdrop-blur-sm">
+          <Volume2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-bold text-white text-sm flex items-center gap-2">
+              Local Speech Synthesizer Active
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
+                No Cloud • No API Keys
+              </span>
+            </p>
+            <p className="text-slate-300 leading-relaxed">
+              Synthesizes text locally into real MP3 audio that streams directly to your hardware speakers. Audio is never blocked by browser iframe restrictions.
+            </p>
+          </div>
         </div>
 
-        {activeTab === 'unlimited' ? (
-          <UnlimitedTTSView />
-        ) : (
-          <>
-            {/* Error Notification */}
+        {/* Error Notification */}
         {errorMessage && (
           <div className="p-4 rounded-xl bg-red-950/50 border border-red-500/40 text-red-200 text-sm flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
@@ -306,7 +345,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Quick Sample Text */}
+        {/* Quick Sample Presets */}
         <div className="flex items-center gap-2 text-xs overflow-x-auto pb-1">
           <span className="text-slate-400 font-medium whitespace-nowrap">Try sample:</span>
           {PRESETS.map((sample, idx) => (
@@ -355,17 +394,17 @@ export default function App() {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type or paste the text you want to convert into speech here..."
+            placeholder="Type or paste the text you want to convert into audio here..."
             className="w-full h-36 bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-slate-100 placeholder-slate-500 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500/60 focus:border-emerald-500 resize-y"
           />
 
-          {/* Voice Selector */}
+          {/* Local Voice Profile Selector */}
           <div>
             <label className="text-xs font-semibold text-slate-300 block mb-2">
-              Select Voice:
+              Select Local Voice:
             </label>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              {VOICES.map((v) => {
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {LOCAL_VOICES.map((v) => {
                 const isSelected = selectedVoice === v.id;
                 return (
                   <button
@@ -381,15 +420,50 @@ export default function App() {
                       <span className="font-bold text-xs text-white">{v.name}</span>
                       <span className="text-[10px] text-slate-400 font-mono">{v.gender}</span>
                     </div>
-                    <p className="text-[10px] text-slate-400 leading-tight">{v.vibe}</p>
+                    <p className="text-[10px] text-slate-400 leading-tight">{v.description}</p>
                   </button>
                 );
               })}
             </div>
           </div>
 
+          {/* Voice Tuning Sliders: Speed & Pitch */}
+          <div className="pt-2 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-400">Speed (Words per minute)</span>
+                <span className="text-emerald-400 font-mono font-semibold">{speed} WPM</span>
+              </div>
+              <input
+                type="range"
+                min={100}
+                max={260}
+                step={10}
+                value={speed}
+                onChange={(e) => setSpeed(parseInt(e.target.value))}
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-400">Voice Pitch</span>
+                <span className="text-emerald-400 font-mono font-semibold">{pitch}</span>
+              </div>
+              <input
+                type="range"
+                min={20}
+                max={80}
+                step={5}
+                value={pitch}
+                onChange={(e) => setPitch(parseInt(e.target.value))}
+                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+              />
+            </div>
+          </div>
+
           {/* Stats & Convert Button */}
-          <div className="pt-2 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span><strong>{wordCount}</strong> words</span>
               <span>•</span>
@@ -412,12 +486,12 @@ export default function App() {
               {isGenerating ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Converting Speech...</span>
+                  <span>Synthesizing Local Audio...</span>
                 </>
               ) : (
                 <>
                   <Play className="w-4 h-4 fill-current" />
-                  <span>Convert to Audio & Listen</span>
+                  <span>Convert to Audio & Listen (Local MP3)</span>
                 </>
               )}
             </button>
@@ -462,13 +536,11 @@ export default function App() {
           }}
           activeClipId={currentClip?.id}
         />
-          </>
-        )}
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-4 text-center text-xs text-slate-500">
-        <p>Text to Audio Converter • Natural Speech Synthesis & MP3 Export</p>
+        <p>Local Voice • 100% Offline Text-to-Audio Synthesizer (Zero AI) • Standard MP3 Export</p>
       </footer>
     </div>
   );

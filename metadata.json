@@ -1,6 +1,6 @@
 {
-  "name": "VoxCraft - Text to Audio Studio",
-  "description": "Convert text into lifelike speech with AI neural voice synthesis, tone direction, audio waveform visualizer, and export options.",
+  "name": "Local Voice - Offline Text to Audio Converter",
+  "description": "100% offline, zero-AI text-to-speech converter using local speech synthesis and MP3 export.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

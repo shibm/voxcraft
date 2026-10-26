@@ -1,11 +1,13 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import crypto from 'crypto';
 
-dotenv.config();
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,101 +15,98 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
 
-// Health check endpoint
+// Health check endpoint - reports 100% local engine status
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
-    hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+    engine: 'local-offline-tts',
+    mode: 'zero-ai',
   });
 });
 
-// Endpoint: Generate Speech via Gemini TTS
+// Endpoint: 100% Local Speech Synthesis using local espeak-ng & ffmpeg (Zero AI, Zero Cloud, 100% Offline)
 app.post('/api/tts/generate', async (req, res) => {
   try {
     const {
       text,
-      voice = 'Kore',
-      style = 'Clear, expressive and natural narrator',
-      model = 'gemini-3.8-flash-lite-tts',
+      voice = 'en-us',
+      speed = 160, // words per minute (80 - 300)
+      pitch = 50,  // pitch (0 - 99)
     } = req.body;
 
     if (!text || typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ error: 'Text content is required' });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(400).json({
-        error:
-          'GEMINI_API_KEY is not configured in the environment. You can use Browser Speech mode, or configure GEMINI_API_KEY in the Secrets panel.',
-        fallbackAvailable: true,
-      });
-    }
+    const cleanText = text.trim();
+    const hash = crypto.randomBytes(8).toString('hex');
+    const tempWav = path.join('/tmp', `local_speech_${hash}.wav`);
+    const tempMp3 = path.join('/tmp', `local_speech_${hash}.mp3`);
 
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
+    // Voice mapping for local engine
+    const voiceMap: Record<string, string> = {
+      'en-us': 'en-us',
+      'en-gb': 'en-gb',
+      'en-sc': 'en-gb-scotland',
+      'en-female-1': 'en-us+f2',
+      'en-female-2': 'en-us+f3',
+      'en-male-deep': 'en-us+m3',
+      'en-whisper': 'en-us+whisper',
+      'Kore': 'en-us+f2',
+      'Puck': 'en-us',
+      'Fenrir': 'en-us+m3',
+      'Zephyr': 'en-us+f3',
+      'Charon': 'en-gb',
+    };
 
-    const targetModel =
-      model === 'gemini-3.8-flash-tts'
-        ? 'gemini-3.8-flash-tts'
-        : 'gemini-3.8-flash-lite-tts';
+    const targetVoice = voiceMap[voice] || voice || 'en-us';
+    const targetSpeed = Math.max(80, Math.min(350, Math.round(Number(speed) || 160)));
+    const targetPitch = Math.max(0, Math.min(99, Math.round(Number(pitch) || 50)));
 
-    const response = await ai.models.generateContent({
-      model: targetModel,
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: text.trim(),
-              speechMetadata: {
-                style: style || 'Clear, expressive and natural speech',
-              },
-            },
-          ],
-        },
-      ],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: voice },
-          },
-        },
-      },
-    });
+    // 1. Synthesize WAV locally using espeak-ng (No AI, purely local phoneme synthesis)
+    await execFileAsync('espeak-ng', [
+      '-v', targetVoice,
+      '-s', targetSpeed.toString(),
+      '-p', targetPitch.toString(),
+      cleanText,
+      '-w', tempWav,
+    ]);
 
-    const base64Audio =
-      response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    const mimeType =
-      response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.mimeType ||
-      'audio/wav';
+    // 2. Encode to MP3 locally using ffmpeg (128 kbps)
+    await execFileAsync('ffmpeg', [
+      '-i', tempWav,
+      '-b:a', '128k',
+      tempMp3,
+      '-y',
+    ]);
 
-    if (!base64Audio) {
-      return res
-        .status(502)
-        .json({ error: 'No audio data received from Gemini API' });
+    // 3. Read output MP3 file
+    const mp3Buffer = fs.readFileSync(tempMp3);
+    const base64Mp3 = mp3Buffer.toString('base64');
+
+    // Clean up temporary files
+    try {
+      if (fs.existsSync(tempWav)) fs.unlinkSync(tempWav);
+      if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3);
+    } catch {
+      // Ignore cleanup error
     }
 
     return res.json({
       success: true,
-      audioBase64: base64Audio,
-      mimeType,
-      voice,
-      style,
-      model: targetModel,
+      audioBase64: base64Mp3,
+      mimeType: 'audio/mp3',
+      voice: targetVoice,
+      engine: 'local-espeak-ng',
+      speed: targetSpeed,
+      pitch: targetPitch,
     });
   } catch (err: any) {
-    console.error('Gemini TTS generation error:', err);
+    console.error('Local TTS generation error:', err);
     return res.status(500).json({
-      error: err?.message || 'Failed to synthesize speech',
+      error: err?.message || 'Failed to synthesize speech using local engine',
       details: err?.toString(),
     });
   }
@@ -136,7 +135,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://0.0.0.0:${PORT}`);
+    console.log(`Local TTS Server running at http://0.0.0.0:${PORT} (100% Offline, Zero AI)`);
   });
 }
 
