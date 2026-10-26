@@ -1,0 +1,6 @@
+{
+  "name": "VoxCraft - Text to Audio Studio",
+  "description": "Convert text into lifelike speech with AI neural voice synthesis, tone direction, audio waveform visualizer, and export options.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
