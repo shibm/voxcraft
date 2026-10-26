@@ -43,44 +43,87 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [showNativeControls, setShowNativeControls] = useState(false);
   const [testingSpeaker, setTestingSpeaker] = useState(false);
 
-  // When audioUrl changes, reset and play
+  // When audioUrl changes, safely handle source readiness and play
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
-    audio.load();
+    if (!audio || !audioUrl) return;
+
     setCurrentTime(0);
     audio.volume = volume;
     audio.muted = isMuted;
 
+    let isCancelled = false;
+
+    const attemptPlay = () => {
+      if (isCancelled) return;
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            if (!isCancelled) setIsPlaying(true);
+          })
+          .catch((err) => {
+            console.warn('Autoplay prevented or waiting for interaction:', err);
+            if (!isCancelled) setIsPlaying(false);
+          });
+      }
+    };
+
     if (autoPlay) {
-      audio
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch((err) => {
-          console.warn('Autoplay prevented by browser, waiting for user click:', err);
-          setIsPlaying(false);
-        });
+      if (audio.readyState >= 2) {
+        attemptPlay();
+      } else {
+        const handleCanPlay = () => {
+          attemptPlay();
+          audio.removeEventListener('canplay', handleCanPlay);
+        };
+        audio.addEventListener('canplay', handleCanPlay);
+        return () => {
+          isCancelled = true;
+          audio.removeEventListener('canplay', handleCanPlay);
+        };
+      }
     } else {
       setIsPlaying(false);
     }
+
+    return () => {
+      isCancelled = true;
+    };
   }, [audioUrl, autoPlay]);
 
   const togglePlay = () => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !audioUrl) return;
 
     if (isPlaying) {
       audio.pause();
       setIsPlaying(false);
     } else {
       audio.volume = isMuted ? 0 : volume || 1;
-      audio
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch((err) => {
-          console.error('Audio play error:', err);
-          setIsPlaying(false);
-        });
+
+      const safePlay = () => {
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => setIsPlaying(true))
+            .catch((err) => {
+              console.warn('Playback notice:', err);
+              setIsPlaying(false);
+            });
+        }
+      };
+
+      if (audio.readyState >= 2) {
+        safePlay();
+      } else {
+        const onCanPlay = () => {
+          safePlay();
+          audio.removeEventListener('canplay', onCanPlay);
+        };
+        audio.addEventListener('canplay', onCanPlay);
+        audio.load();
+      }
     }
   };
 
@@ -212,8 +255,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
+        onError={(e) => {
+          console.warn('Audio load notice:', e);
+        }}
         preload="auto"
-      />
+      >
+        <source src={audioUrl} type={audioUrl.endsWith('.mp3') || mp3Url ? 'audio/mpeg' : 'audio/wav'} />
+      </audio>
 
       {/* Header Info */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">

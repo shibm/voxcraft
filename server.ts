@@ -116,6 +116,9 @@ app.post('/api/tts/generate', async (req, res) => {
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
+  // Statically serve public directory with full byte-range support for audio
+  app.use(express.static(path.resolve(__dirname, 'public')));
+
   if (!isProd) {
     const vite = await createViteServer({
       server: {
