@@ -109,16 +109,27 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                 </button>
 
                 <button
-                  onClick={() =>
-                    downloadAudio(
-                      clip.audioUrl,
-                      `voxcraft-${clip.voiceName.toLowerCase()}-${clip.id}.wav`
-                    )
-                  }
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
-                  title="Download WAV"
+                  onClick={async () => {
+                    const filename = `voxcraft-${clip.voiceName.toLowerCase()}-${clip.id}.mp3`;
+                    if (clip.mp3Url) {
+                      downloadAudio(clip.mp3Url, filename);
+                    } else {
+                      try {
+                        const { wavArrayBufferToMp3Blob } = await import('../utils/mp3Encoder');
+                        const resp = await fetch(clip.audioUrl);
+                        const arrayBuffer = await resp.arrayBuffer();
+                        const mp3Blob = wavArrayBufferToMp3Blob(arrayBuffer);
+                        downloadAudio(URL.createObjectURL(mp3Blob), filename);
+                      } catch {
+                        downloadAudio(clip.audioUrl, filename.replace('.mp3', '.wav'));
+                      }
+                    }
+                  }}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-600/30 text-slate-400 hover:text-emerald-300 transition flex items-center gap-1 text-[11px]"
+                  title="Download MP3"
                 >
                   <Download className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-bold">MP3</span>
                 </button>
 
                 <button

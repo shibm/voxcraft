@@ -23,6 +23,7 @@ export interface GeneratedClip {
   voiceName: string;
   stylePrompt?: string;
   audioUrl: string;
+  mp3Url?: string;
   base64Audio?: string;
   timestamp: number;
   duration?: number;

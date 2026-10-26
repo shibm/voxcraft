@@ -14,9 +14,11 @@ import {
 import { Visualizer } from './Visualizer';
 import { formatTime, downloadAudio } from '../utils/audio';
 import { playTestChime } from '../utils/soundTest';
+import { wavArrayBufferToMp3Blob } from '../utils/mp3Encoder';
 
 interface AudioPlayerProps {
   audioUrl: string;
+  mp3Url?: string;
   title?: string;
   voiceName?: string;
   autoPlay?: boolean;
@@ -24,6 +26,7 @@ interface AudioPlayerProps {
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   audioUrl,
+  mp3Url,
   title = 'Generated Audio',
   voiceName = 'Audio Voice',
   autoPlay = true,
@@ -154,9 +157,36 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
   };
 
-  const handleDownload = () => {
+  const [convertingMp3, setConvertingMp3] = useState(false);
+
+  const handleDownloadWav = () => {
     const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     downloadAudio(audioUrl, `voxcraft-${voiceName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.wav`);
+  };
+
+  const handleDownloadMp3 = async () => {
+    const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const filename = `voxcraft-${voiceName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.mp3`;
+
+    if (mp3Url) {
+      downloadAudio(mp3Url, filename);
+      return;
+    }
+
+    // Convert WAV into MP3 on the fly
+    setConvertingMp3(true);
+    try {
+      const resp = await fetch(audioUrl);
+      const arrayBuffer = await resp.arrayBuffer();
+      const mp3Blob = wavArrayBufferToMp3Blob(arrayBuffer, 128);
+      const mp3DownloadUrl = URL.createObjectURL(mp3Blob);
+      downloadAudio(mp3DownloadUrl, filename);
+    } catch (e) {
+      console.error('Failed to convert to MP3:', e);
+      downloadAudio(audioUrl, filename.replace('.mp3', '.wav'));
+    } finally {
+      setConvertingMp3(false);
+    }
   };
 
   const handleCopyLink = () => {
@@ -196,11 +226,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
                 {voiceName}
               </span>
             </h4>
-            <p className="text-xs text-slate-400">Playable Audio • Standard 16-bit WAV</p>
+            <p className="text-xs text-slate-400">Playable Audio • MP3 & WAV Available</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
           <button
             onClick={handleSpeakerTest}
             title="Play a test sound to verify your speakers are working"
@@ -219,13 +249,24 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             <span className="hidden sm:inline">{copied ? 'Copied' : 'Share'}</span>
           </button>
 
+          {/* Download MP3 Button (Primary) */}
           <button
-            onClick={handleDownload}
-            title="Download WAV Audio file"
-            className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition active:scale-95"
+            onClick={handleDownloadMp3}
+            disabled={convertingMp3}
+            title="Convert and download audio as MP3 file"
+            className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition active:scale-95 disabled:opacity-50"
           >
             <Download className="w-4 h-4" />
-            <span>Download WAV</span>
+            <span>{convertingMp3 ? 'Encoding MP3...' : 'Download MP3'}</span>
+          </button>
+
+          {/* Download WAV Button (Secondary) */}
+          <button
+            onClick={handleDownloadWav}
+            title="Download original WAV file"
+            className="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium text-xs flex items-center gap-1 transition"
+          >
+            <span>WAV</span>
           </button>
         </div>
       </div>

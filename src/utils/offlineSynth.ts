@@ -5,6 +5,8 @@
  * Uses Formant & Phonetic synthesis with Web Audio API / PCM encoding.
  */
 
+import { pcmToMp3Blob } from './mp3Encoder';
+
 // Formant frequency maps (F1, F2, F3) for vowels
 const FORMANT_MAP: Record<string, { f1: number; f2: number; f3: number; duration: number }> = {
   a: { f1: 730, f2: 1090, f3: 2440, duration: 0.16 },
@@ -101,7 +103,7 @@ export interface SynthOptions {
 export function synthesizeTextToWAV(
   text: string,
   options: SynthOptions = {}
-): { blob: Blob; url: string; duration: number } {
+): { blob: Blob; url: string; mp3Blob: Blob; mp3Url: string; duration: number } {
   const sampleRate = 22050;
   const baseF0 = options.pitch || 150;
   const speed = Math.max(0.5, Math.min(2.0, options.speed || 1.0));
@@ -219,5 +221,9 @@ export function synthesizeTextToWAV(
   const blob = encodeWAV(fullSamples, sampleRate);
   const url = URL.createObjectURL(blob);
 
-  return { blob, url, duration };
+  // Also encode directly to standard MP3
+  const mp3Blob = pcmToMp3Blob(fullSamples, sampleRate, 128);
+  const mp3Url = URL.createObjectURL(mp3Blob);
+
+  return { blob, url, mp3Blob, mp3Url, duration };
 }

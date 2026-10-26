@@ -19,6 +19,7 @@ import {
   Code2,
   HelpCircle,
   VolumeX,
+  Upload,
 } from 'lucide-react';
 import { EngineMode, NeuralVoice, TonePreset, GeneratedClip } from './types';
 import {
@@ -164,6 +165,8 @@ export default function App() {
   const [currentClip, setCurrentClip] = useState<GeneratedClip | null>(null);
   const [history, setHistory] = useState<GeneratedClip[]>([]);
   const [copiedText, setCopiedText] = useState<boolean>(false);
+  const [autoPlayNext, setAutoPlayNext] = useState<boolean>(false);
+  const playerRef = useRef<HTMLDivElement | null>(null);
 
   const wordCount = countWords(text);
   const estimatedSeconds = estimateDuration(wordCount, Math.round(150 * rate));
@@ -226,27 +229,20 @@ export default function App() {
       console.warn('Failed to load history', e);
     }
 
-    // Auto-generate initial sample clip so user has immediate playable audio
-    try {
-      const { url, duration } = synthesizeTextToWAV(SAMPLE_TEXTS[3].text, {
-        pitch: 160,
-        speed: 1.0,
-        mode: 'natural',
-      });
-      const initialClip: GeneratedClip = {
-        id: 'sample-1',
-        text: SAMPLE_TEXTS[3].text,
-        engine: 'wav-synth',
-        voiceName: 'Vocal Formant Synthesizer',
-        audioUrl: url,
-        timestamp: Date.now(),
-        duration: Math.round(duration),
-        wordCount: countWords(SAMPLE_TEXTS[3].text),
-      };
-      setCurrentClip(initialClip);
-    } catch {
-      // Fallback
-    }
+    // Preload the user's uploaded MP3 clip so it is immediately playable
+    const uploadedClip: GeneratedClip = {
+      id: 'uploaded-user-mp3',
+      text: 'Hello! Welcome to VoxCraft. You can convert any text into audible speech and downloadable sound files directly in your browser without needing AI.',
+      engine: 'wav-synth',
+      voiceName: 'Your Generated MP3',
+      audioUrl: '/assets/aistudio/voxcraft-vocal-formant-synth-2026-10-26-23-10-24_c76624d7.mp3',
+      mp3Url: '/assets/aistudio/voxcraft-vocal-formant-synth-2026-10-26-23-10-24_c76624d7.mp3',
+      timestamp: Date.now(),
+      duration: 16,
+      wordCount: 24,
+    };
+    setCurrentClip(uploadedClip);
+    setHistory((prev) => [uploadedClip, ...prev.filter((c) => c.id !== uploadedClip.id)]);
   }, []);
 
   const saveToHistory = (clip: GeneratedClip) => {
@@ -259,6 +255,34 @@ export default function App() {
       }
       return updated;
     });
+  };
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const url = URL.createObjectURL(file);
+    const newClip: GeneratedClip = {
+      id: Date.now().toString(),
+      text: `Uploaded File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+      engine: 'wav-synth',
+      voiceName: file.name.slice(0, 16),
+      audioUrl: url,
+      mp3Url: file.type.includes('mp3') ? url : undefined,
+      timestamp: Date.now(),
+      duration: 0,
+      wordCount: 0,
+    };
+
+    setCurrentClip(newClip);
+    saveToHistory(newClip);
+    setAutoPlayNext(true);
+
+    setTimeout(() => {
+      playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
   };
 
   // Sound Test Helper
@@ -285,7 +309,7 @@ export default function App() {
 
     try {
       const baseFreq = pitch * 150;
-      const { url, duration } = synthesizeTextToWAV(text, {
+      const { url, mp3Url, duration } = synthesizeTextToWAV(text, {
         pitch: baseFreq,
         speed: rate,
         mode: synthTone,
@@ -297,6 +321,7 @@ export default function App() {
         engine: 'wav-synth',
         voiceName: synthTone === 'natural' ? 'Vocal Formant Synth' : 'Retro 8-Bit Synth',
         audioUrl: url,
+        mp3Url: mp3Url,
         timestamp: Date.now(),
         duration: Math.round(duration),
         wordCount,
@@ -304,6 +329,12 @@ export default function App() {
 
       setCurrentClip(newClip);
       saveToHistory(newClip);
+      setAutoPlayNext(true);
+
+      // Smoothly scroll to the player so the user immediately sees it playing
+      setTimeout(() => {
+        playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
     } catch (err: any) {
       console.error('Offline WAV generation error:', err);
       setErrorMessage(err.message || 'Failed to synthesize offline WAV.');
@@ -483,6 +514,11 @@ export default function App() {
 
       setCurrentClip(newClip);
       saveToHistory(newClip);
+      setAutoPlayNext(true);
+
+      setTimeout(() => {
+        playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
     } catch (err: any) {
       console.error('Gemini error:', err);
       setErrorMessage(
@@ -596,6 +632,25 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Hidden Audio File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*,.mp3,.wav,.ogg,.m4a"
+              onChange={handleUploadAudio}
+              className="hidden"
+            />
+
+            {/* Upload MP3/Audio File Button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Upload an MP3 or audio file to listen to it in the player"
+              className="px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 transition active:scale-95"
+            >
+              <Upload className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">Upload & Listen to MP3</span>
+            </button>
+
             {/* Speaker Sound Test Button */}
             <button
               onClick={handleTestSpeaker}
@@ -1239,19 +1294,25 @@ export default function App() {
 
         {/* Audio Player Section - Guaranteed audible output */}
         {currentClip && (
-          <div className="space-y-2">
+          <div ref={playerRef} className="space-y-2 scroll-mt-20">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white tracking-wide uppercase flex items-center gap-2">
                 <Headphones className="w-4 h-4 text-emerald-400" />
                 Active Playable Audio
+                {autoPlayNext && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono animate-pulse">
+                    Playing Now
+                  </span>
+                )}
               </h3>
-              <span className="text-xs text-slate-400">Click Play below to hear sound</span>
+              <span className="text-xs text-slate-400">Audio ready • Use controls below</span>
             </div>
             <AudioPlayer
               audioUrl={currentClip.audioUrl}
+              mp3Url={currentClip.mp3Url}
               title={`Audio Clip: "${currentClip.text.slice(0, 38)}..."`}
               voiceName={currentClip.voiceName}
-              autoPlay={false}
+              autoPlay={autoPlayNext}
             />
           </div>
         )}
