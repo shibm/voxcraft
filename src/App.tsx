@@ -506,6 +506,15 @@ export default function App() {
           </div>
 
           {/* Stats & Convert Button */}
+          {wordCount > 500 && (
+            <div className="text-xs text-amber-300 bg-amber-950/40 border border-amber-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>Long Text Detected ({wordCount} words • ~{formatTime(estimatedSeconds)} audio)</strong>: Full synthesis will take a few seconds to generate. For instant conversion, paste 1–2 questions or sections (100–300 words).
+              </span>
+            </div>
+          )}
+
           <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-xs text-slate-400 flex items-center gap-3">
               <span><strong>{wordCount}</strong> words</span>

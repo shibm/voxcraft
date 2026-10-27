@@ -110,7 +110,9 @@ export function synthesizeTextToWAV(
   const mode = options.mode || 'natural';
 
   const cleanText = text.toLowerCase().replace(/[^a-z0-9\s.,!?]/g, ' ');
-  const words = cleanText.split(/\s+/).filter(Boolean);
+  const allWords = cleanText.split(/\s+/).filter(Boolean);
+  // Cap client-side in-browser synthesis to 300 words to prevent browser main-thread freeze
+  const words = allWords.slice(0, 300);
 
   const sampleBlocks: Float32Array[] = [];
 

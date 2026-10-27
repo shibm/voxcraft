@@ -328,6 +328,24 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
+function cleanTextForTTS(input: string): string {
+  return input
+    // Replace code blocks with concise spoken pause
+    .replace(/```[\s\S]*?```/g, ' [code snippet omitted] ')
+    // Replace markdown links with their text label: [label](url) -> label
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Remove emojis and unsupported unicode symbols
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu, '')
+    // Remove markdown headers, bullets and decorative lines
+    .replace(/^[#*>-]+\s*/gm, '')
+    // Replace table format lines with commas for natural speech pauses
+    .replace(/\|[-:]+\|/g, ' ')
+    .replace(/\|/g, ', ')
+    // Collapse excess whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Endpoint: 100% Local Speech Synthesis (Zero AI, Zero Cloud, 100% Offline)
 app.post('/api/tts/generate', async (req, res) => {
   const hash = crypto.randomBytes(8).toString('hex');
@@ -347,7 +365,10 @@ app.post('/api/tts/generate', async (req, res) => {
       return res.status(400).json({ error: 'Text content is required' });
     }
 
-    const cleanText = text.trim();
+    const cleanText = cleanTextForTTS(text);
+    if (!cleanText) {
+      return res.status(400).json({ error: 'No speakable text found' });
+    }
     const targetSpeed = Math.max(80, Math.min(350, Math.round(Number(speed) || 160)));
     const targetPitch = Math.max(0, Math.min(99, Math.round(Number(pitch) || 50)));
 
