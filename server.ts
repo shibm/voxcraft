@@ -17,7 +17,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '20mb' }));
+const AUDIO_DIR = path.resolve(__dirname, 'public', 'audio');
+if (!fs.existsSync(AUDIO_DIR)) {
+  fs.mkdirSync(AUDIO_DIR, { recursive: true });
+}
+
+app.use(express.json({ limit: '50mb' }));
 
 // Helper: Check if a CLI command exists in PATH
 async function commandExists(cmd: string): Promise<boolean> {
@@ -69,7 +74,7 @@ function generateFormantWav(text: string, speedMultiplier: number = 1.0, pitchHz
   const baseF0 = Math.max(70, Math.min(300, pitchHz));
   const speed = Math.max(0.5, Math.min(2.5, speedMultiplier));
   const cleanText = text.toLowerCase().replace(/[^a-z0-9\s.,!?]/g, ' ');
-  const words = cleanText.split(/\s+/).filter(Boolean);
+  const words = cleanText.split(/\s+/).filter(Boolean).slice(0, 500); // safe limit for JS fallback
   const sampleBlocks: Float32Array[] = [];
 
   for (let w = 0; w < words.length; w++) {
@@ -167,7 +172,7 @@ function generateFormantWav(text: string, speedMultiplier: number = 1.0, pitchHz
   return wavBuf;
 }
 
-// Convert any standard WAV buffer to MP3 in memory using lamejs (no external ffmpeg binary required)
+// Convert standard WAV buffer to MP3 in memory using lamejs
 function wavBufferToMp3Buffer(wavBuffer: Buffer, kbps: number = 128): Buffer {
   const ab = wavBuffer.buffer.slice(
     wavBuffer.byteOffset,
@@ -348,10 +353,13 @@ function cleanTextForTTS(input: string): string {
 
 // Endpoint: 100% Local Speech Synthesis (Zero AI, Zero Cloud, 100% Offline)
 app.post('/api/tts/generate', async (req, res) => {
+  // Allow ample time for processing long documents
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+
   const hash = crypto.randomBytes(8).toString('hex');
-  const tempWav = path.join(os.tmpdir(), `voxcraft_${hash}.wav`);
   const tempTxt = path.join(os.tmpdir(), `voxcraft_${hash}.txt`);
-  const tempMp3 = path.join(os.tmpdir(), `voxcraft_${hash}.mp3`);
+  const tempWav = path.join(os.tmpdir(), `voxcraft_${hash}.wav`);
 
   try {
     const {
@@ -369,24 +377,63 @@ app.post('/api/tts/generate', async (req, res) => {
     if (!cleanText) {
       return res.status(400).json({ error: 'No speakable text found' });
     }
+
+    const wordCount = cleanText.split(/\s+/).filter(Boolean).length;
     const targetSpeed = Math.max(80, Math.min(350, Math.round(Number(speed) || 160)));
     const targetPitch = Math.max(0, Math.min(99, Math.round(Number(pitch) || 50)));
+    const durationSeconds = Math.max(1, Math.round((wordCount / targetSpeed) * 60));
 
+    fs.writeFileSync(tempTxt, cleanText, 'utf8');
+
+    const isMac = process.platform === 'darwin';
+    const hasEspeakNg = await commandExists('espeak-ng');
+    const hasEspeak = !hasEspeakNg && (await commandExists('espeak'));
+    const isWin = process.platform === 'win32';
+
+    // TIER 1 (macOS): Native hardware AAC synthesis directly to streamable file
+    if (isMac) {
+      const outputFilename = `voxcraft_${hash}.m4a`;
+      const publicAudioPath = path.join(AUDIO_DIR, outputFilename);
+      const targetVoice = macVoiceMap[voice] || 'Samantha';
+
+      await execFileAsync('say', [
+        '-v', targetVoice,
+        '-r', targetSpeed.toString(),
+        '-f', tempTxt,
+        '-o', publicAudioPath,
+        '--data-format=aac',
+      ]);
+
+      if (fs.existsSync(publicAudioPath) && fs.statSync(publicAudioPath).size > 0) {
+        const audioUrl = `/audio/${outputFilename}`;
+        const fileSize = fs.statSync(publicAudioPath).size;
+        let audioBase64: string | undefined;
+        // Include base64 for small files (< 3MB) for legacy compatibility
+        if (fileSize < 3 * 1024 * 1024) {
+          audioBase64 = fs.readFileSync(publicAudioPath).toString('base64');
+        }
+
+        return res.json({
+          success: true,
+          audioUrl,
+          downloadUrl: audioUrl,
+          audioBase64,
+          mimeType: 'audio/mp4',
+          voice: targetVoice,
+          engine: 'macos-say',
+          speed: targetSpeed,
+          pitch: targetPitch,
+          duration: durationSeconds,
+          wordCount,
+        });
+      }
+    }
+
+    // TIER 2: Linux / espeak-ng / espeak
     let wavBuffer: Buffer | null = null;
     let engineUsed = 'built-in-synth';
     let targetVoice = voice;
 
-    // Detect available speech engines:
-    // 1. espeak-ng / espeak
-    // 2. macOS `say` (built-in on every Mac)
-    // 3. Windows PowerShell SAPI
-    // 4. Built-in JavaScript formant synthesizer
-    const hasEspeakNg = await commandExists('espeak-ng');
-    const hasEspeak = !hasEspeakNg && (await commandExists('espeak'));
-    const isMac = process.platform === 'darwin';
-    const isWin = process.platform === 'win32';
-
-    // Tier 1: Try espeak-ng or espeak if present
     if (hasEspeakNg || hasEspeak) {
       try {
         const bin = hasEspeakNg ? 'espeak-ng' : 'espeak';
@@ -403,33 +450,9 @@ app.post('/api/tts/generate', async (req, res) => {
           engineUsed = bin;
         }
       } catch (err) {
-        console.warn('espeak synthesis failed, falling back to next engine:', err);
+        console.warn('espeak synthesis failed, falling back:', err);
       }
-    }
-
-    // Tier 2: Try macOS `say` on darwin
-    if (!wavBuffer && isMac) {
-      try {
-        targetVoice = macVoiceMap[voice] || 'Samantha';
-        fs.writeFileSync(tempTxt, cleanText, 'utf8');
-        await execFileAsync('say', [
-          '-v', targetVoice,
-          '-r', targetSpeed.toString(),
-          '-f', tempTxt,
-          '-o', tempWav,
-          '--data-format=LEI16@22050',
-        ]);
-        if (fs.existsSync(tempWav)) {
-          wavBuffer = fs.readFileSync(tempWav);
-          engineUsed = 'macos-say';
-        }
-      } catch (err) {
-        console.warn('macOS say failed, falling back to next engine:', err);
-      }
-    }
-
-    // Tier 3: Try Windows PowerShell SpeechSynthesizer
-    if (!wavBuffer && isWin) {
+    } else if (isWin) {
       try {
         targetVoice = voice;
         const rate = Math.max(-10, Math.min(10, Math.round((targetSpeed - 160) / 15)));
@@ -447,11 +470,11 @@ $speak.Dispose();
           engineUsed = 'windows-sapi';
         }
       } catch (err) {
-        console.warn('Windows SAPI failed, falling back to next engine:', err);
+        console.warn('Windows SAPI failed, falling back:', err);
       }
     }
 
-    // Tier 4: Pure JavaScript acoustic formant synthesizer (always works)
+    // TIER 3: Built-in JavaScript formant synthesis fallback
     if (!wavBuffer) {
       const basePitch = jsPitchMap[voice] || (targetPitch * 2 + 50);
       wavBuffer = generateFormantWav(cleanText, targetSpeed / 160, basePitch);
@@ -459,47 +482,49 @@ $speak.Dispose();
       targetVoice = voice;
     }
 
-    // Convert WAV buffer to MP3 in memory using lamejs
-    let outputBuffer: Buffer = wavBuffer;
+    // Convert to MP3 and save to public audio directory
+    const outputFilename = `voxcraft_${hash}.mp3`;
+    const publicAudioPath = path.join(AUDIO_DIR, outputFilename);
     let mimeType = 'audio/mp3';
 
     try {
-      outputBuffer = wavBufferToMp3Buffer(wavBuffer, 128);
-      mimeType = 'audio/mp3';
-    } catch (lameErr) {
-      console.warn('In-memory MP3 encoding failed, checking ffmpeg:', lameErr);
-      const hasFfmpeg = await commandExists('ffmpeg');
-      if (hasFfmpeg) {
-        try {
-          fs.writeFileSync(tempWav, wavBuffer);
-          await execFileAsync('ffmpeg', [
-            '-i', tempWav,
-            '-b:a', '128k',
-            tempMp3,
-            '-y',
-          ]);
-          outputBuffer = fs.readFileSync(tempMp3);
-          mimeType = 'audio/mp3';
-        } catch {
-          // Output original WAV if ffmpeg also fails
-          outputBuffer = wavBuffer;
-          mimeType = 'audio/wav';
-        }
-      } else {
-        // Fallback to high-quality PCM WAV output directly
-        outputBuffer = wavBuffer;
-        mimeType = 'audio/wav';
-      }
+      const mp3Buffer = wavBufferToMp3Buffer(wavBuffer, 128);
+      fs.writeFileSync(publicAudioPath, mp3Buffer);
+    } catch {
+      // If MP3 fails, save WAV
+      const wavFilename = `voxcraft_${hash}.wav`;
+      fs.writeFileSync(path.join(AUDIO_DIR, wavFilename), wavBuffer);
+      const audioUrl = `/audio/${wavFilename}`;
+      return res.json({
+        success: true,
+        audioUrl,
+        downloadUrl: audioUrl,
+        audioBase64: wavBuffer.length < 3 * 1024 * 1024 ? wavBuffer.toString('base64') : undefined,
+        mimeType: 'audio/wav',
+        voice: targetVoice,
+        engine: engineUsed,
+        speed: targetSpeed,
+        pitch: targetPitch,
+        duration: durationSeconds,
+        wordCount,
+      });
     }
+
+    const audioUrl = `/audio/${outputFilename}`;
+    const fileSize = fs.statSync(publicAudioPath).size;
 
     return res.json({
       success: true,
-      audioBase64: outputBuffer.toString('base64'),
+      audioUrl,
+      downloadUrl: audioUrl,
+      audioBase64: fileSize < 3 * 1024 * 1024 ? fs.readFileSync(publicAudioPath).toString('base64') : undefined,
       mimeType,
       voice: targetVoice,
       engine: engineUsed,
       speed: targetSpeed,
       pitch: targetPitch,
+      duration: durationSeconds,
+      wordCount,
     });
   } catch (err: any) {
     console.error('Local TTS generation error:', err);
@@ -512,7 +537,6 @@ $speak.Dispose();
     try {
       if (fs.existsSync(tempWav)) fs.unlinkSync(tempWav);
       if (fs.existsSync(tempTxt)) fs.unlinkSync(tempTxt);
-      if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3);
     } catch {
       // Ignore cleanup error
     }
@@ -522,7 +546,21 @@ $speak.Dispose();
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
-  // Statically serve public directory with full byte-range support for audio
+  // Serve static audio directory with full byte-range streaming support
+  app.use('/audio', express.static(AUDIO_DIR, {
+    acceptRanges: true,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.m4a')) {
+        res.setHeader('Content-Type', 'audio/mp4');
+      } else if (filePath.endsWith('.mp3')) {
+        res.setHeader('Content-Type', 'audio/mpeg');
+      } else if (filePath.endsWith('.wav')) {
+        res.setHeader('Content-Type', 'audio/wav');
+      }
+    },
+  }));
+
+  // Statically serve public directory
   app.use(express.static(path.resolve(__dirname, 'public')));
 
   if (!isProd) {
@@ -541,9 +579,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Local TTS Server running at http://0.0.0.0:${PORT} (100% Offline, Zero AI)`);
   });
+
+  // Ensure long syntheses are not killed by server timeouts
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
 }
 
 startServer();

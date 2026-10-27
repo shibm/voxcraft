@@ -22,6 +22,7 @@ interface AudioPlayerProps {
   title?: string;
   voiceName?: string;
   autoPlay?: boolean;
+  duration?: number;
 }
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
@@ -30,11 +31,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   title = 'Generated Audio',
   voiceName = 'Audio Voice',
   autoPlay = true,
+  duration: initialDuration,
 }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(initialDuration || 0);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
@@ -42,6 +44,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [copied, setCopied] = useState(false);
   const [showNativeControls, setShowNativeControls] = useState(false);
   const [testingSpeaker, setTestingSpeaker] = useState(false);
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0) {
+      setDuration(initialDuration);
+    }
+  }, [initialDuration, audioUrl]);
 
   // When audioUrl changes, safely handle source readiness and play
   useEffect(() => {
@@ -145,7 +153,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handleLoadedMetadata = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    setDuration(audio.duration || 0);
+    if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
+      setDuration(audio.duration);
+    } else if (initialDuration && initialDuration > 0) {
+      setDuration(initialDuration);
+    }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -209,10 +221,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   const handleDownloadMp3 = async () => {
     const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const filename = `voxcraft-${voiceName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.mp3`;
+    const targetUrl = mp3Url || audioUrl;
+    const ext = targetUrl.endsWith('.m4a') ? '.m4a' : targetUrl.endsWith('.wav') ? '.wav' : '.mp3';
+    const filename = `voxcraft-${voiceName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}${ext}`;
 
-    if (mp3Url) {
-      downloadAudio(mp3Url, filename);
+    if (targetUrl) {
+      downloadAudio(targetUrl, filename);
       return;
     }
 
@@ -254,14 +268,14 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         src={audioUrl}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={handleLoadedMetadata}
+        onCanPlay={handleLoadedMetadata}
         onEnded={handleEnded}
         onError={(e) => {
           console.warn('Audio load notice:', e);
         }}
         preload="auto"
-      >
-        <source src={audioUrl} type={audioUrl.endsWith('.mp3') || mp3Url ? 'audio/mpeg' : 'audio/wav'} />
-      </audio>
+      />
 
       {/* Header Info */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">

@@ -190,7 +190,7 @@ export default function App() {
     setErrorMessage(null);
 
     try {
-      // Calls local speech synthesis on localhost (50ms latency, zero cloud)
+      // Calls local speech synthesis on localhost (zero cloud)
       const response = await fetch('/api/tts/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,26 +204,27 @@ export default function App() {
 
       const data = await response.json();
 
-      if (!response.ok || !data.audioBase64) {
+      if (!response.ok || (!data.audioUrl && !data.audioBase64)) {
         throw new Error(data.error || 'Local speech synthesis failed.');
       }
 
-      // Convert local base64 audio (MP3 or WAV) to Blob URL for instant speaker output
-      const mimeType = data.mimeType || 'audio/mp3';
-      const audioUrl = base64ToBlobUrl(data.audioBase64, mimeType);
+      // Use the direct streaming audioUrl or convert base64
+      const mimeType = data.mimeType || (data.audioUrl?.endsWith('.m4a') ? 'audio/mp4' : 'audio/mp3');
+      const finalAudioUrl = data.audioUrl || (data.audioBase64 ? base64ToBlobUrl(data.audioBase64, mimeType) : '');
       const chosenVoiceObj = LOCAL_VOICES.find((v) => v.id === selectedVoice);
+      const clipDuration = data.duration || estimatedSeconds;
 
       const newClip: GeneratedClip = {
         id: Date.now().toString(),
-        text: text.trim(),
+        text: text.trim().slice(0, 200) + (text.trim().length > 200 ? '...' : ''),
         engine: 'wav-synth',
         voiceName: chosenVoiceObj ? chosenVoiceObj.name : 'Local Voice',
-        audioUrl: audioUrl,
-        mp3Url: audioUrl,
+        audioUrl: finalAudioUrl,
+        mp3Url: finalAudioUrl,
         base64Audio: data.audioBase64,
         timestamp: Date.now(),
-        duration: estimatedSeconds,
-        wordCount,
+        duration: clipDuration,
+        wordCount: data.wordCount || wordCount,
       };
 
       setCurrentClip(newClip);
@@ -235,48 +236,8 @@ export default function App() {
         playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }, 50);
     } catch (err: any) {
-      console.warn('Backend TTS request failed, using instant in-browser offline synth:', err);
-      try {
-        const pitchMap: Record<string, number> = {
-          'en-us+f2': 210,
-          'en-us': 130,
-          'en-us+f3': 240,
-          'en-us+m3': 95,
-          'en-gb': 145,
-          'en-gb-scotland': 125,
-          'en-us+whisper': 180,
-        };
-        const basePitch = pitchMap[selectedVoice] || (pitch * 2 + 50);
-        const synthResult = synthesizeTextToWAV(text.trim(), {
-          pitch: basePitch,
-          speed: speed / 160,
-          mode: selectedVoice === 'en-us+whisper' ? 'retro' : 'natural',
-        });
-
-        const chosenVoiceObj = LOCAL_VOICES.find((v) => v.id === selectedVoice);
-        const newClip: GeneratedClip = {
-          id: Date.now().toString(),
-          text: text.trim(),
-          engine: 'wav-synth',
-          voiceName: chosenVoiceObj ? chosenVoiceObj.name : 'Local Voice',
-          audioUrl: synthResult.mp3Url || synthResult.url,
-          mp3Url: synthResult.mp3Url,
-          timestamp: Date.now(),
-          duration: synthResult.duration || estimatedSeconds,
-          wordCount,
-        };
-
-        setCurrentClip(newClip);
-        saveToHistory(newClip);
-        setErrorMessage(null);
-
-        setTimeout(() => {
-          playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }, 50);
-      } catch (fallbackErr: any) {
-        console.error('Local speech error:', fallbackErr);
-        setErrorMessage(err.message || 'Unable to generate local speech.');
-      }
+      console.error('Local speech error:', err);
+      setErrorMessage(err.message || 'Unable to generate local speech.');
     } finally {
       setIsGenerating(false);
     }
@@ -538,12 +499,16 @@ export default function App() {
               {isGenerating ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Synthesizing Local Audio...</span>
+                  <span>
+                    {wordCount > 1000
+                      ? `Converting Full Document (${wordCount} words • ~${formatTime(estimatedSeconds)})... Please wait`
+                      : 'Synthesizing Local Audio...'}
+                  </span>
                 </>
               ) : (
                 <>
                   <Play className="w-4 h-4 fill-current" />
-                  <span>Convert to Audio & Listen (Local MP3)</span>
+                  <span>Convert to Audio & Listen</span>
                 </>
               )}
             </button>
@@ -562,6 +527,7 @@ export default function App() {
               mp3Url={currentClip.mp3Url}
               title={`Audio: "${currentClip.text.slice(0, 42)}..."`}
               voiceName={currentClip.voiceName}
+              duration={currentClip.duration}
               autoPlay={true}
             />
           </div>
