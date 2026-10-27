@@ -95,6 +95,7 @@ export default function App() {
   const [speed, setSpeed] = useState<number>(160); // words per minute (100 - 260)
   const [pitch, setPitch] = useState<number>(50);  // pitch (20 - 80)
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [genSeconds, setGenSeconds] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentClip, setCurrentClip] = useState<GeneratedClip | null>(null);
   const [history, setHistory] = useState<GeneratedClip[]>([]);
@@ -107,27 +108,62 @@ export default function App() {
   const wordCount = countWords(text);
   const estimatedSeconds = estimateDuration(wordCount, speed);
 
-  // Load history from localStorage
+  // Load history from localStorage and sanitize broken clips
   useEffect(() => {
     try {
       const saved = localStorage.getItem('voxcraft_history');
+      let hydrated: GeneratedClip[] = [];
       if (saved) {
         const parsed: GeneratedClip[] = JSON.parse(saved);
-        const hydrated = parsed.map((item) => {
-          if (item.base64Audio) {
-            const url = base64ToBlobUrl(item.base64Audio, 'audio/mp3');
-            return {
-              ...item,
-              audioUrl: url,
-              mp3Url: url,
-            };
-          }
-          return item;
-        });
+        hydrated = parsed
+          .filter((item) => {
+            // Remove broken/ephemeral clips from old sessions that point to missing voxcraft_ temp files
+            if (item.audioUrl?.includes('/audio/voxcraft_')) return false;
+            return item.duration && item.duration > 0 && !item.audioUrl?.includes('28B');
+          })
+          .map((item) => {
+            if (item.base64Audio) {
+              const url = base64ToBlobUrl(item.base64Audio, 'audio/mp3');
+              return {
+                ...item,
+                audioUrl: url,
+                mp3Url: url,
+              };
+            }
+            return item;
+          });
+      }
+
+      const fullInterviewClip: GeneratedClip = {
+        id: 'interview-prep-full',
+        text: '🔹 Full Interview Prep Guide Complete Audio (~112 min, 17,324 words)',
+        engine: 'macos-say',
+        voiceName: 'Emma (US)',
+        audioUrl: '/audio/interview_prep_full.m4a',
+        mp3Url: '/audio/interview_prep_full.m4a',
+        timestamp: Date.now(),
+        duration: 6775,
+        wordCount: 17324,
+      };
+
+      const nodejsQaClip: GeneratedClip = {
+        id: 'interview-prep-active',
+        text: '🔹 Node.js (15 Q&A) Interview Prep Audio (24 min, 3,800 words)',
+        engine: 'macos-say',
+        voiceName: 'Emma (US)',
+        audioUrl: '/audio/interview_prep_audio.mp3',
+        mp3Url: '/audio/interview_prep_audio.mp3',
+        timestamp: Date.now() - 1000,
+        duration: 1473,
+        wordCount: 3800,
+      };
+
+      if (hydrated.length > 0 && hydrated[0].audioUrl && !hydrated[0].audioUrl.includes('/audio/voxcraft_')) {
+        setCurrentClip(hydrated[0]);
         setHistory(hydrated);
-        if (hydrated.length > 0) {
-          setCurrentClip(hydrated[0]);
-        }
+      } else {
+        setCurrentClip(fullInterviewClip);
+        setHistory([fullInterviewClip, nodejsQaClip, ...hydrated.filter((c) => c.id !== fullInterviewClip.id && c.id !== nodejsQaClip.id)]);
       }
     } catch (e) {
       console.warn('Failed to load history', e);
@@ -187,7 +223,12 @@ export default function App() {
     }
 
     setIsGenerating(true);
+    setGenSeconds(0);
     setErrorMessage(null);
+
+    const timer = setInterval(() => {
+      setGenSeconds((s) => s + 1);
+    }, 1000);
 
     try {
       // Calls local speech synthesis on localhost (zero cloud)
@@ -217,7 +258,7 @@ export default function App() {
       const newClip: GeneratedClip = {
         id: Date.now().toString(),
         text: text.trim().slice(0, 200) + (text.trim().length > 200 ? '...' : ''),
-        engine: 'wav-synth',
+        engine: data.engine || 'macos-say',
         voiceName: chosenVoiceObj ? chosenVoiceObj.name : 'Local Voice',
         audioUrl: finalAudioUrl,
         mp3Url: finalAudioUrl,
@@ -239,7 +280,9 @@ export default function App() {
       console.error('Local speech error:', err);
       setErrorMessage(err.message || 'Unable to generate local speech.');
     } finally {
+      clearInterval(timer);
       setIsGenerating(false);
+      setGenSeconds(0);
     }
   };
 
@@ -501,8 +544,8 @@ export default function App() {
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   <span>
                     {wordCount > 1000
-                      ? `Converting Full Document (${wordCount} words • ~${formatTime(estimatedSeconds)})... Please wait`
-                      : 'Synthesizing Local Audio...'}
+                      ? `Converting Document (${wordCount} words) • ${genSeconds}s elapsed...`
+                      : `Synthesizing Audio • ${genSeconds}s...`}
                   </span>
                 </>
               ) : (

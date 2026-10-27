@@ -10,6 +10,7 @@ import {
   Check,
   Share2,
   Bell,
+  AlertCircle,
 } from 'lucide-react';
 import { Visualizer } from './Visualizer';
 import { formatTime, downloadAudio } from '../utils/audio';
@@ -44,8 +45,10 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [copied, setCopied] = useState(false);
   const [showNativeControls, setShowNativeControls] = useState(false);
   const [testingSpeaker, setTestingSpeaker] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoadError(null);
     if (initialDuration && initialDuration > 0) {
       setDuration(initialDuration);
     }
@@ -62,34 +65,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
     let isCancelled = false;
 
-    const attemptPlay = () => {
-      if (isCancelled) return;
+    if (autoPlay) {
       const playPromise = audio.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
-            if (!isCancelled) setIsPlaying(true);
+            if (!isCancelled) {
+              setIsPlaying(true);
+              setLoadError(null);
+            }
           })
           .catch((err) => {
             console.warn('Autoplay prevented or waiting for interaction:', err);
             if (!isCancelled) setIsPlaying(false);
           });
-      }
-    };
-
-    if (autoPlay) {
-      if (audio.readyState >= 2) {
-        attemptPlay();
-      } else {
-        const handleCanPlay = () => {
-          attemptPlay();
-          audio.removeEventListener('canplay', handleCanPlay);
-        };
-        audio.addEventListener('canplay', handleCanPlay);
-        return () => {
-          isCancelled = true;
-          audio.removeEventListener('canplay', handleCanPlay);
-        };
       }
     } else {
       setIsPlaying(false);
@@ -109,28 +98,21 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       setIsPlaying(false);
     } else {
       audio.volume = isMuted ? 0 : volume || 1;
+      setLoadError(null);
 
-      const safePlay = () => {
-        const playPromise = audio.play();
-        if (playPromise !== undefined) {
-          playPromise
-            .then(() => setIsPlaying(true))
-            .catch((err) => {
-              console.warn('Playback notice:', err);
-              setIsPlaying(false);
-            });
-        }
-      };
-
-      if (audio.readyState >= 2) {
-        safePlay();
-      } else {
-        const onCanPlay = () => {
-          safePlay();
-          audio.removeEventListener('canplay', onCanPlay);
-        };
-        audio.addEventListener('canplay', onCanPlay);
-        audio.load();
+      // Call play synchronously directly on the user gesture
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+            setLoadError(null);
+          })
+          .catch((err) => {
+            console.warn('Playback error:', err);
+            setIsPlaying(false);
+            setLoadError('Audio source could not be played. File may be unavailable or still generating.');
+          });
       }
     }
   };
@@ -141,7 +123,19 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     audio.currentTime = 0;
     setCurrentTime(0);
     audio.volume = isMuted ? 0 : volume || 1;
-    audio.play().then(() => setIsPlaying(true));
+    setLoadError(null);
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+          setLoadError(null);
+        })
+        .catch((err) => {
+          console.warn('Restart play error:', err);
+          setIsPlaying(false);
+        });
+    }
   };
 
   const handleTimeUpdate = () => {
@@ -272,10 +266,22 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         onCanPlay={handleLoadedMetadata}
         onEnded={handleEnded}
         onError={(e) => {
-          console.warn('Audio load notice:', e);
+          console.warn('Audio element load error:', e);
+          setIsPlaying(false);
+          setLoadError('Audio file is unavailable on the server or is still generating. Click Convert or choose a sample.');
         }}
         preload="auto"
       />
+
+      {/* Error Notice */}
+      {loadError && (
+        <div className="mb-4 p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+            <span>{loadError}</span>
+          </div>
+        </div>
+      )}
 
       {/* Header Info */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">

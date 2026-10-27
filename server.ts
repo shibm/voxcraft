@@ -339,6 +339,10 @@ function cleanTextForTTS(input: string): string {
     .replace(/```[\s\S]*?```/g, ' [code snippet omitted] ')
     // Replace markdown links with their text label: [label](url) -> label
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Remove HTML, JSX, XML tags which confuse Apple say SSML parser
+    .replace(/<[^>]+>/g, ' ')
+    // Remove Apple Speech Synthesis embedded commands [[...]]
+    .replace(/\[\[.*?\]\]/g, ' ')
     // Remove emojis and unsupported unicode symbols
     .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu, '')
     // Remove markdown headers, bullets and decorative lines
@@ -346,6 +350,8 @@ function cleanTextForTTS(input: string): string {
     // Replace table format lines with commas for natural speech pauses
     .replace(/\|[-:]+\|/g, ' ')
     .replace(/\|/g, ', ')
+    // Remove stray angle brackets or curly braces
+    .replace(/[<>{}]/g, ' ')
     // Collapse excess whitespace
     .replace(/\s+/g, ' ')
     .trim();
@@ -394,17 +400,20 @@ app.post('/api/tts/generate', async (req, res) => {
     if (isMac) {
       const outputFilename = `voxcraft_${hash}.m4a`;
       const publicAudioPath = path.join(AUDIO_DIR, outputFilename);
+      const tempM4a = path.join(os.tmpdir(), `voxcraft_temp_${hash}.m4a`);
       const targetVoice = macVoiceMap[voice] || 'Samantha';
 
       await execFileAsync('say', [
         '-v', targetVoice,
         '-r', targetSpeed.toString(),
         '-f', tempTxt,
-        '-o', publicAudioPath,
+        '-o', tempM4a,
         '--data-format=aac',
       ]);
 
-      if (fs.existsSync(publicAudioPath) && fs.statSync(publicAudioPath).size > 0) {
+      if (fs.existsSync(tempM4a) && fs.statSync(tempM4a).size > 1024) {
+        fs.copyFileSync(tempM4a, publicAudioPath);
+        try { fs.unlinkSync(tempM4a); } catch {}
         const audioUrl = `/audio/${outputFilename}`;
         const fileSize = fs.statSync(publicAudioPath).size;
         let audioBase64: string | undefined;
@@ -426,6 +435,8 @@ app.post('/api/tts/generate', async (req, res) => {
           duration: durationSeconds,
           wordCount,
         });
+      } else {
+        throw new Error('macOS speech engine did not produce a valid audio file. Please check text formatting.');
       }
     }
 

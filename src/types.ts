@@ -1,4 +1,4 @@
-export type EngineMode = 'browser-speech' | 'wav-synth' | 'gemini';
+export type EngineMode = 'browser-speech' | 'wav-synth' | 'gemini' | 'macos-say' | 'local-tts';
 
 export interface NeuralVoice {
   id: string;
