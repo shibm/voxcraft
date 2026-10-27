@@ -7,7 +7,15 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'crypto';
-import { Mp3Encoder } from '@breezystack/lamejs';
+
+let Mp3EncoderClass: any;
+async function getMp3EncoderClass() {
+  if (!Mp3EncoderClass) {
+    const lame = await import('@breezystack/lamejs');
+    Mp3EncoderClass = lame.Mp3Encoder || (lame as any).default?.Mp3Encoder;
+  }
+  return Mp3EncoderClass;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +28,10 @@ const PORT = Number(process.env.PORT) || 3000;
 const AUDIO_DIR = path.resolve(__dirname, 'public', 'audio');
 if (!fs.existsSync(AUDIO_DIR)) {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
+}
+const LOCAL_AUDIO_DIR = path.resolve(__dirname, 'audio');
+if (!fs.existsSync(LOCAL_AUDIO_DIR)) {
+  fs.mkdirSync(LOCAL_AUDIO_DIR, { recursive: true });
 }
 
 app.use(express.json({ limit: '50mb' }));
@@ -173,66 +185,70 @@ function generateFormantWav(text: string, speedMultiplier: number = 1.0, pitchHz
 }
 
 // Convert standard WAV buffer to MP3 in memory using lamejs
-function wavBufferToMp3Buffer(wavBuffer: Buffer, kbps: number = 128): Buffer {
-  const ab = wavBuffer.buffer.slice(
-    wavBuffer.byteOffset,
-    wavBuffer.byteOffset + wavBuffer.byteLength
-  );
-  const view = new DataView(ab);
-
-  const riff = String.fromCharCode(
-    view.getUint8(0),
-    view.getUint8(1),
-    view.getUint8(2),
-    view.getUint8(3)
-  );
-  if (riff !== 'RIFF') {
+async function wavBufferToMp3Buffer(wavBuffer: Buffer, kbps: number = 128): Promise<Buffer> {
+  if (wavBuffer.length < 44 || wavBuffer.toString('ascii', 0, 4) !== 'RIFF') {
     throw new Error('Invalid WAV format: missing RIFF header');
   }
 
-  const channels = view.getUint16(22, true) || 1;
-  const sampleRate = view.getUint32(24, true) || 22050;
-  const bitsPerSample = view.getUint16(34, true) || 16;
-
-  // Search for the 'data' subchunk
-  let dataOffset = 12;
+  let channels = 1;
+  let sampleRate = 22050;
+  let bitsPerSample = 16;
+  let dataOffset = 0;
   let dataLen = 0;
-  while (dataOffset < view.byteLength - 8) {
-    const chunkId = String.fromCharCode(
-      view.getUint8(dataOffset),
-      view.getUint8(dataOffset + 1),
-      view.getUint8(dataOffset + 2),
-      view.getUint8(dataOffset + 3)
-    );
-    const chunkSize = view.getUint32(dataOffset + 4, true);
-    if (chunkId === 'data') {
-      dataOffset += 8;
+
+  // Scan RIFF chunks dynamically
+  let offset = 12;
+  while (offset + 8 <= wavBuffer.length) {
+    const chunkId = wavBuffer.toString('ascii', offset, offset + 4);
+    const chunkSize = wavBuffer.readUInt32LE(offset + 4);
+    if (chunkId === 'fmt ') {
+      channels = wavBuffer.readUInt16LE(offset + 10) || 1;
+      sampleRate = wavBuffer.readUInt32LE(offset + 12) || 22050;
+      bitsPerSample = wavBuffer.readUInt16LE(offset + 22) || 16;
+    } else if (chunkId === 'data') {
+      dataOffset = offset + 8;
       dataLen = chunkSize;
       break;
     }
-    dataOffset += 8 + chunkSize;
+    offset += 8 + chunkSize;
   }
 
-  if (dataLen === 0 || dataOffset >= view.byteLength) {
-    dataOffset = 44;
-    dataLen = view.byteLength - 44;
+  if (dataOffset === 0 || dataLen === 0) {
+    const dataIdx = wavBuffer.indexOf('data');
+    if (dataIdx !== -1 && dataIdx + 8 <= wavBuffer.length) {
+      dataOffset = dataIdx + 8;
+      dataLen = wavBuffer.readUInt32LE(dataIdx + 4);
+    } else {
+      dataOffset = 44;
+      dataLen = wavBuffer.length - 44;
+    }
   }
 
-  const sampleCount = Math.floor(dataLen / (bitsPerSample / 8));
+  const rawBytes = wavBuffer.subarray(dataOffset, dataOffset + dataLen);
+  const sampleCount = Math.floor(rawBytes.byteLength / (bitsPerSample / 8));
   let int16Samples: Int16Array;
 
   if (bitsPerSample === 16) {
-    int16Samples = new Int16Array(ab, dataOffset, sampleCount);
+    int16Samples = new Int16Array(
+      rawBytes.buffer,
+      rawBytes.byteOffset,
+      sampleCount
+    );
   } else if (bitsPerSample === 8) {
     int16Samples = new Int16Array(sampleCount);
     for (let i = 0; i < sampleCount; i++) {
-      int16Samples[i] = (view.getUint8(dataOffset + i) - 128) << 8;
+      int16Samples[i] = (rawBytes[i] - 128) << 8;
     }
   } else {
-    int16Samples = new Int16Array(ab, dataOffset, Math.floor(dataLen / 2));
+    int16Samples = new Int16Array(
+      rawBytes.buffer,
+      rawBytes.byteOffset,
+      Math.floor(rawBytes.byteLength / 2)
+    );
   }
 
-  const encoder = new Mp3Encoder(channels, sampleRate, kbps);
+  const Encoder = await getMp3EncoderClass();
+  const encoder = new Encoder(channels, sampleRate, kbps);
   const mp3Chunks: Buffer[] = [];
   const chunkSize = 1152;
 
@@ -240,7 +256,11 @@ function wavBufferToMp3Buffer(wavBuffer: Buffer, kbps: number = 128): Buffer {
     for (let i = 0; i < int16Samples.length; i += chunkSize) {
       const chunk = int16Samples.subarray(i, i + chunkSize);
       const mp3buf = encoder.encodeBuffer(chunk);
-      if (mp3buf.length > 0) mp3Chunks.push(Buffer.from(mp3buf));
+      if (mp3buf.length > 0) {
+        mp3Chunks.push(
+          Buffer.from(mp3buf.buffer, mp3buf.byteOffset, mp3buf.byteLength)
+        );
+      }
     }
   } else {
     const totalStereoPairs = Math.floor(int16Samples.length / 2);
@@ -254,12 +274,20 @@ function wavBufferToMp3Buffer(wavBuffer: Buffer, kbps: number = 128): Buffer {
       const leftChunk = left.subarray(i, i + chunkSize);
       const rightChunk = right.subarray(i, i + chunkSize);
       const mp3buf = encoder.encodeBuffer(leftChunk, rightChunk);
-      if (mp3buf.length > 0) mp3Chunks.push(Buffer.from(mp3buf));
+      if (mp3buf.length > 0) {
+        mp3Chunks.push(
+          Buffer.from(mp3buf.buffer, mp3buf.byteOffset, mp3buf.byteLength)
+        );
+      }
     }
   }
 
   const endBuf = encoder.flush();
-  if (endBuf.length > 0) mp3Chunks.push(Buffer.from(endBuf));
+  if (endBuf.length > 0) {
+    mp3Chunks.push(
+      Buffer.from(endBuf.buffer, endBuf.byteOffset, endBuf.byteLength)
+    );
+  }
 
   return Buffer.concat(mp3Chunks);
 }
@@ -396,38 +424,66 @@ app.post('/api/tts/generate', async (req, res) => {
     const hasEspeak = !hasEspeakNg && (await commandExists('espeak'));
     const isWin = process.platform === 'win32';
 
-    // TIER 1 (macOS): Native hardware AAC synthesis directly to streamable file
+    // TIER 1 (macOS): Native hardware speech synthesis with MP3 + AAC output
     if (isMac) {
-      const outputFilename = `voxcraft_${hash}.m4a`;
-      const publicAudioPath = path.join(AUDIO_DIR, outputFilename);
-      const tempM4a = path.join(os.tmpdir(), `voxcraft_temp_${hash}.m4a`);
+      const outputMp3 = `voxcraft_${hash}.mp3`;
+      const outputM4a = `voxcraft_${hash}.m4a`;
+      const publicMp3Path = path.join(AUDIO_DIR, outputMp3);
+      const publicM4aPath = path.join(AUDIO_DIR, outputM4a);
+      const localMp3Path = path.join(LOCAL_AUDIO_DIR, outputMp3);
+      const localM4aPath = path.join(LOCAL_AUDIO_DIR, outputM4a);
+      const tempWav = path.join(os.tmpdir(), `voxcraft_temp_${hash}.wav`);
       const targetVoice = macVoiceMap[voice] || 'Samantha';
 
+      // Generate standard 16-bit 22050Hz PCM WAV using macOS say
       await execFileAsync('say', [
         '-v', targetVoice,
         '-r', targetSpeed.toString(),
+        '--data-format=LEI16@22050',
         '-f', tempTxt,
-        '-o', tempM4a,
-        '--data-format=aac',
+        '-o', tempWav,
       ]);
 
-      if (fs.existsSync(tempM4a) && fs.statSync(tempM4a).size > 1024) {
-        fs.copyFileSync(tempM4a, publicAudioPath);
-        try { fs.unlinkSync(tempM4a); } catch {}
-        const audioUrl = `/audio/${outputFilename}`;
-        const fileSize = fs.statSync(publicAudioPath).size;
+      if (fs.existsSync(tempWav) && fs.statSync(tempWav).size > 1024) {
+        const rawWavBuffer = fs.readFileSync(tempWav);
+        const mp3Buffer = await wavBufferToMp3Buffer(rawWavBuffer, 128);
+        fs.writeFileSync(publicMp3Path, mp3Buffer);
+        fs.writeFileSync(localMp3Path, mp3Buffer);
+
+        // Also create m4a for maximum compatibility
+        const tempM4a = path.join(os.tmpdir(), `voxcraft_temp_${hash}.m4a`);
+        try {
+          await execFileAsync('say', [
+            '-v', targetVoice,
+            '-r', targetSpeed.toString(),
+            '-f', tempTxt,
+            '-o', tempM4a,
+            '--data-format=aac',
+          ]);
+          if (fs.existsSync(tempM4a) && fs.statSync(tempM4a).size > 1024) {
+            fs.copyFileSync(tempM4a, publicM4aPath);
+            fs.copyFileSync(tempM4a, localM4aPath);
+            try { fs.unlinkSync(tempM4a); } catch {}
+          }
+        } catch {}
+
+        try { fs.unlinkSync(tempWav); } catch {}
+
+        const audioUrl = `/audio/${outputMp3}`;
+        const fileSize = mp3Buffer.length;
         let audioBase64: string | undefined;
         // Include base64 for small files (< 3MB) for legacy compatibility
         if (fileSize < 3 * 1024 * 1024) {
-          audioBase64 = fs.readFileSync(publicAudioPath).toString('base64');
+          audioBase64 = mp3Buffer.toString('base64');
         }
 
         return res.json({
           success: true,
           audioUrl,
           downloadUrl: audioUrl,
+          mp3Url: audioUrl,
           audioBase64,
-          mimeType: 'audio/mp4',
+          mimeType: 'audio/mpeg',
           voice: targetVoice,
           engine: 'macos-say',
           speed: targetSpeed,
@@ -499,7 +555,7 @@ $speak.Dispose();
     let mimeType = 'audio/mp3';
 
     try {
-      const mp3Buffer = wavBufferToMp3Buffer(wavBuffer, 128);
+      const mp3Buffer = await wavBufferToMp3Buffer(wavBuffer, 128);
       fs.writeFileSync(publicAudioPath, mp3Buffer);
     } catch {
       // If MP3 fails, save WAV
