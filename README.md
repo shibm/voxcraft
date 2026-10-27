@@ -86,19 +86,14 @@ Synthesizes speech on the local machine and returns base64 MP3 audio.
    npm install
    ```
 
-2. **Ensure Local Speech Engine is Installed**:
+2. **Local Speech Engine**:
+   - **macOS**: Built-in native speech (`/usr/bin/say`) is supported automatically out of the box with zero installation required! (Optional: `brew install espeak-ng ffmpeg`)
    - **Linux / Ubuntu**:
      ```bash
      sudo apt-get install espeak-ng ffmpeg
      ```
-   - **macOS** (via Homebrew):
-     ```bash
-     brew install espeak-ng ffmpeg
-     ```
-   - **Windows** (via Chocolatey or Scoop):
-     ```powershell
-     choco install espeak-ng ffmpeg
-     ```
+   - **Windows**: Built-in PowerShell speech is supported out of the box. (Optional: `choco install espeak-ng ffmpeg`)
+   - **Zero-Dependency Fallback**: Built-in acoustic formant synthesis & in-memory MP3 encoding (`@breezystack/lamejs`) runs anywhere even without any system binaries installed.
 
 3. **Start the Development Server**:
    ```bash
